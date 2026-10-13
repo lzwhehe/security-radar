@@ -1,0 +1,44 @@
+# 网络安全雷达配置 — 无需改代码即可调整采集范围
+# 不存在时使用 src/lib/config.ts 中的内置默认值
+
+# CVE 采集阈值：仅保留 CVSS 基础分 >= 该值的漏洞
+cve:
+  min_cvss: 7.0
+  # 最近多少小时内更新的 CVE
+  lookback_hours: 36
+  # 最多保留条数
+  max_items: 40
+
+# 关注的厂商/关键词（命中则优先排序，不限制采集）
+focus_keywords:
+  - microsoft
+  - windows
+  - linux
+  - cisco
+  - fortinet
+  - palo alto
+  - vmware
+  - apache
+  - openssl
+  - kubernetes
+  - docker
+  - chrome
+  - android
+  - ios
+
+# 安全资讯 RSS 源
+news_feeds:
+  - name: The Hacker News
+    url: https://feeds.feedburner.com/TheHackersNews
+  - name: BleepingComputer
+    url: https://www.bleepingcomputer.com/feed/
+  - name: Krebs on Security
+    url: https://krebsonsecurity.com/feed/
+  - name: Schneier on Security
+    url: https://www.schneier.com/feed/atom/
+
+# 每个源最多保留条数
+limits:
+  news_max: 25
+  ghsa_max: 25
+  kev_max: 20

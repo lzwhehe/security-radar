@@ -1,0 +1,25 @@
+{
+  "name": "security-radar",
+  "version": "1.0.0",
+  "private": true,
+  "description": "网络安全实时情报看板 — 聚合 NVD/GHSA/CISA KEV/安全资讯，规则引擎打分排序，免密钥部署",
+  "scripts": {
+    "dev": "next dev",
+    "build": "next build",
+    "start": "next start",
+    "lint": "next lint"
+  },
+  "dependencies": {
+    "fast-xml-parser": "^4.5.0",
+    "next": "^14.2.35",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1",
+    "yaml": "^2.6.1"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.1",
+    "@types/react": "^18.3.12",
+    "@types/react-dom": "^18.3.1",
+    "typescript": "^5.7.2"
+  }
+}
