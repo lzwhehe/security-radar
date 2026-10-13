@@ -9,6 +9,8 @@ interface KevEntry {
   dateAdded: string;
   shortDescription: string;
   knownRansomwareCampaignUse?: string;
+  dueDate?: string;
+  requiredAction?: string;
 }
 
 /** CISA KEV — 已知被在野利用的漏洞目录（威胁情报） */
@@ -37,6 +39,8 @@ export async function fetchKev(): Promise<SourceResult> {
       publishedAt: e.dateAdded,
       tags: [e.vendorProject.toLowerCase()],
       cve: e.cveID,
+      dueDate: e.dueDate,
+      ransomware: e.knownRansomwareCampaignUse === "Known",
     }));
 
     return { source: "kev", ok: true, items, total: entries.length };

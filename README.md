@@ -11,12 +11,16 @@
 
 | 功能 | 说明 |
 | --- | --- |
-| 多源采集 | NVD CVE API 2.0（近 36h 更新、CVSS ≥ 7）、GitHub Advisory（reviewed, Critical/High）、CISA KEV 目录、4 个安全媒体 RSS/Atom |
+| 多源采集 | NVD CVE API 2.0（近 36h 更新、CVSS ≥ 7）、GitHub Advisory、CISA KEV、**长亭漏洞库（中文 + 修复建议）**、中英文安全资讯（安全客、先知社区、Seebug Paper、Krebs、Schneier 等） |
+| 增强信号 | **FIRST EPSS** 未来 30 天被利用概率与百分位；**PoC-in-GitHub** 公开 PoC 数量与 star；**KEV 修复截止倒计时**与勒索软件标记 |
 | 跨源关联 | 从结构化字段与正文中提取 CVE 编号，标出被多个情报源同时报道的漏洞（多源印证） |
-| 规则引擎打分 | 在野利用 > 勒索软件关联 > CVSS / 严重度 > 多源印证 > 关注厂商命中 > 新鲜度，每条给出打分理由 |
-| 今日要点 | 根据实时数据自动生成的情报摘要（KEV 新增、严重 CVE 数、高频厂商、多源印证、头条资讯） |
-| 交互看板 | 按来源筛选、关键词 / CVE 编号搜索、按优先级或时间排序，移动端适配 |
-| 开放接口 | `GET /api/intel` 返回完整 JSON 快照；`/feed.xml` 按优先级输出 RSS |
+| 规则引擎打分 | 在野利用 > 勒索关联 > 严重度 > EPSS > 公开 PoC > 多源印证 > 关注厂商 > 新鲜度，每条都给出打分理由 |
+| 今日要点 | 自动生成：KEV 新增与修复截止、已有公开 PoC 的漏洞、EPSS 前 1%、严重 CVE、中文漏洞库、高频厂商、资讯头条 |
+| CVE 详情抽屉 | 描述、CWE、受影响产品、参考链接、**CISA SSVC 判定与处置建议**（立即处置 / 重点关注 / 跟踪）、PoC 列表、中文修复建议 |
+| 交互看板 | 按来源分栏、组合过滤（在野利用 / 有 PoC / EPSS ≥ 10% / 勒索 / 近 7 天）、搜索、按优先级 / EPSS / 时间排序 |
+| 关注资产 | 厂商 / 产品关键词存在浏览器本地，命中条目置顶高亮；可用 `?watch=fortinet,gitlab` 链接分享 |
+| 导出与接口 | 一键导出当前筛选结果为 CSV；`GET /api/intel` 完整快照、`GET /api/cve/{id}` 单个 CVE 详情、`/feed.xml` RSS |
+| 数据源健康 | 每个源 / 每个 RSS / 每项增强数据的状态、条数、耗时与错误原因，单源失败自动降级 |
 
 ## 架构
 
@@ -54,7 +58,7 @@ npm install
 npm run dev     # http://localhost:3000
 ```
 
-可选环境变量（不填也能运行）：`GITHUB_TOKEN`（提升 GHSA 速率限制）、`NVD_API_KEY`（提升 NVD 速率限制）、`SITE_URL`（RSS 中的站点链接）。
+可选环境变量（不填也能运行）：`GITHUB_TOKEN`（提升 GHSA 速率限制）、`NVD_API_KEY`（提升 NVD 速率限制）、`SITE_URL`（RSS 中的站点链接）、`BASE_PATH`（子路径部署，如 `/radar`）、`NEWS_SKIP`（逗号分隔的资讯源名称，跳过当前网络访问不了的源）、`POC_BASE`（PoC-in-GitHub 镜像地址，默认 jsDelivr）。
 
 ## 部署
 

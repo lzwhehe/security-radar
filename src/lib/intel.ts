@@ -1,14 +1,26 @@
-import type { BriefingPoint, IntelSnapshot, RawItem, ScoredItem, SourceKind } from "./types";
+import type {
+  BriefingPoint,
+  EnrichStatus,
+  IntelSnapshot,
+  PocInfo,
+  RawItem,
+  ScoredItem,
+  SourceKind,
+} from "./types";
 import { unstable_cache } from "next/cache";
 import { collectAll } from "./sources";
+import { fetchEpss, fetchPocMany, type EpssScore } from "./enrich";
 
 const CVE_RE = /CVE-\d{4}-\d{4,7}/gi;
 const DAY = 24 * 3600 * 1000;
+/** 每轮只给优先级最高的这么多个 CVE 查 PoC，控制外部请求量 */
+const POC_CHECK_LIMIT = 60;
 
 const SOURCE_LABEL: Record<SourceKind, string> = {
   cve: "NVD",
   ghsa: "GHSA",
   kev: "CISA KEV",
+  cn: "长亭",
   news: "资讯",
 };
 
@@ -26,17 +38,28 @@ function ageDays(iso?: string): number {
   return Number.isNaN(t) ? Infinity : (Date.now() - t) / DAY;
 }
 
+function daysUntil(date?: string): number | undefined {
+  if (!date) return undefined;
+  const t = Date.parse(`${date}T23:59:59Z`);
+  return Number.isNaN(t) ? undefined : Math.floor((t - Date.now()) / DAY);
+}
+
+interface Signals {
+  epss?: EpssScore;
+  poc?: PocInfo;
+}
+
 /**
- * 规则引擎：替代 LLM 摘要的可解释打分。
- * 在野利用 > 勒索关联 > CVSS 分值 > 多源印证 > 关注厂商命中 > 新鲜度。
+ * 规则引擎：可解释打分，每一分都写进 reasons。
+ * 在野利用 > 勒索关联 > 严重度 > 被利用概率(EPSS) > 公开 PoC > 多源印证 > 关注厂商 > 新鲜度。
  */
-function score(it: RawItem, seenIn: SourceKind[]): { priority: number; reasons: string[] } {
+function score(it: RawItem, seenIn: SourceKind[], sig: Signals): { priority: number; reasons: string[] } {
   let p = 0;
   const reasons: string[] = [];
   if (it.source === "kev") {
     p += 70;
     reasons.push("在野利用");
-    if (it.severity?.includes("勒索")) {
+    if (it.ransomware) {
       p += 15;
       reasons.push("勒索软件关联");
     }
@@ -49,6 +72,15 @@ function score(it: RawItem, seenIn: SourceKind[]): { priority: number; reasons: 
     reasons.push("Critical");
   } else if (it.severity === "HIGH") {
     p += 42;
+  }
+  if (sig.epss && it.source !== "news") {
+    p += sig.epss.pct * 25;
+    if (sig.epss.epss >= 0.1) reasons.push(`EPSS ${(sig.epss.epss * 100).toFixed(0)}%`);
+    else if (sig.epss.pct >= 0.95) reasons.push(`EPSS 前 ${((1 - sig.epss.pct) * 100).toFixed(1)}%`);
+  }
+  if (sig.poc && sig.poc.count > 0 && it.source !== "news") {
+    p += 12;
+    reasons.push(`公开 PoC ×${sig.poc.count}`);
   }
   const others = seenIn.filter((s) => s !== it.source);
   if (others.length) {
@@ -70,7 +102,7 @@ function buildBriefing(items: ScoredItem[], totals: Partial<Record<SourceKind, n
   const out: BriefingPoint[] = [];
   const kev = items.filter((i) => i.source === "kev");
   const kevWeek = kev.filter((i) => ageDays(i.publishedAt) <= 7);
-  const kevRansom = kev.filter((i) => i.severity?.includes("勒索"));
+  const kevRansom = kev.filter((i) => i.ransomware);
   if (kevWeek.length) {
     out.push({
       level: "critical",
@@ -85,6 +117,50 @@ function buildBriefing(items: ScoredItem[], totals: Partial<Record<SourceKind, n
     out.push({ level: "high", text: `CISA KEV 最近一次更新收录 ${kev[0].id}（${kev[0].publishedAt}）。` });
   }
 
+  // CISA KEV 修复截止：分开统计已逾期和 7 天内到期，并给出近期 CISA 给的修复期长度
+  const overdue = kev.filter((i) => i.kevDueDays !== undefined && i.kevDueDays < 0);
+  const dueSoon = kev.filter((i) => i.kevDueDays !== undefined && i.kevDueDays >= 0 && i.kevDueDays <= 7);
+  if (overdue.length || dueSoon.length) {
+    const windows = kev
+      .map((i) => (i.dueDate && i.publishedAt ? (Date.parse(i.dueDate) - Date.parse(i.publishedAt)) / DAY : NaN))
+      .filter((d) => !Number.isNaN(d))
+      .sort((a, b) => a - b);
+    const median = windows.length ? windows[Math.floor(windows.length / 2)] : undefined;
+    const parts: string[] = [];
+    if (dueSoon.length) parts.push(`${dueSoon.length} 个将在 7 天内到期（${dueSoon.slice(0, 3).map((i) => i.id).join("、")}）`);
+    if (overdue.length) parts.push(`${overdue.length} 个已过截止日`);
+    out.push({
+      level: "critical",
+      text: `KEV 修复截止：${parts.join("，")}${
+        median !== undefined ? `；CISA 近期给新收录漏洞的修复期中位数仅 ${Math.round(median)} 天，需要更快的补丁节奏` : ""
+      }。`,
+    });
+  }
+
+  const withPoc = dedupeByCve(items.filter((i) => i.source !== "news" && (i.poc?.count ?? 0) > 0)).sort(
+    (a, b) => (b.poc?.stars ?? 0) - (a.poc?.stars ?? 0),
+  );
+  if (withPoc.length) {
+    const t = withPoc[0];
+    out.push({
+      level: "high",
+      text: `${withPoc.length} 个漏洞已有公开 PoC，武器化风险高；关注度最高的是 ${t.cve}（${t.poc!.count} 个 PoC 仓库，最高 ${t.poc!.stars}★）。`,
+    });
+  }
+
+  const hotEpss = dedupeByCve(items.filter((i) => i.source !== "news" && (i.epssPct ?? 0) >= 0.99)).sort(
+    (a, b) => (b.epss ?? 0) - (a.epss ?? 0),
+  );
+  if (hotEpss.length) {
+    out.push({
+      level: "high",
+      text: `${hotEpss.length} 个漏洞的 EPSS 位于全部 CVE 的前 1%（未来 30 天被利用概率最高）：${hotEpss
+        .slice(0, 3)
+        .map((i) => `${i.cve}（${((i.epss ?? 0) * 100).toFixed(0)}%）`)
+        .join("、")}。`,
+    });
+  }
+
   const cves = items.filter((i) => i.source === "cve");
   const crit = cves.filter((i) => (i.score ?? 0) >= 9);
   if (cves.length) {
@@ -92,6 +168,14 @@ function buildBriefing(items: ScoredItem[], totals: Partial<Record<SourceKind, n
     out.push({
       level: crit.length ? "critical" : "high",
       text: `NVD 近 36 小时共有 ${totals.cve ?? cves.length} 条 CVE 更新，筛出 CVSS ≥ 7 的高危 ${cves.length} 条（≥ 9 的严重 ${crit.length} 条）；最高分 ${top.id}（${top.score?.toFixed(1)}）。`,
+    });
+  }
+
+  const cn = items.filter((i) => i.source === "cn");
+  if (cn.length) {
+    out.push({
+      level: "info",
+      text: `长亭漏洞库最新收录：${cn[0].title}${cn[0].fixSteps ? "（已附中文修复建议）" : ""}。`,
     });
   }
 
@@ -105,20 +189,11 @@ function buildBriefing(items: ScoredItem[], totals: Partial<Record<SourceKind, n
     });
   }
 
-  const multi = items.filter((i) => i.source !== "news" && i.seenIn.length > 1);
-  const multiIds = [...new Set(multi.map((i) => i.cve ?? i.id))];
+  const multiIds = [...new Set(items.filter((i) => i.source !== "news" && i.seenIn.length > 1).map((i) => i.cve ?? i.id))];
   if (multiIds.length) {
     out.push({
       level: "high",
       text: `${multiIds.length} 个漏洞被多个情报源同时报道（${multiIds.slice(0, 3).join("、")}${multiIds.length > 3 ? " 等" : ""}），可信度与关注度更高。`,
-    });
-  }
-
-  const ghsaCrit = items.filter((i) => i.source === "ghsa" && i.severity === "CRITICAL");
-  if (ghsaCrit.length) {
-    out.push({
-      level: "high",
-      text: `GitHub Advisory 新增 ${ghsaCrit.length} 条 Critical 级开源组件漏洞，最新：${ghsaCrit[0].title.slice(0, 80)}。`,
     });
   }
 
@@ -129,23 +204,85 @@ function buildBriefing(items: ScoredItem[], totals: Partial<Record<SourceKind, n
   return out;
 }
 
+function dedupeByCve(items: ScoredItem[]): ScoredItem[] {
+  const seen = new Set<string>();
+  return items.filter((i) => {
+    if (!i.cve || seen.has(i.cve)) return false;
+    seen.add(i.cve);
+    return true;
+  });
+}
+
 async function buildIntel(): Promise<IntelSnapshot> {
   const results = await collectAll();
 
   // CVE → 出现过的来源，用于跨源关联
   const index = new Map<string, Set<SourceKind>>();
   const all = results.flatMap((r) => r.items);
-  for (const it of all) for (const c of cvesOf(it)) {
-    if (!index.has(c)) index.set(c, new Set());
-    index.get(c)!.add(it.source);
-  }
+  for (const it of all)
+    for (const c of cvesOf(it)) {
+      if (!index.has(c)) index.set(c, new Set());
+      index.get(c)!.add(it.source);
+    }
 
-  const items: ScoredItem[] = all.map((it) => {
+  const base = all.map((it) => {
     const ids = cvesOf(it);
     const seen = new Set<SourceKind>([it.source]);
     for (const c of ids) for (const s of index.get(c) ?? []) seen.add(s);
-    const seenIn = [...seen];
-    return { ...it, cve: it.cve ?? ids[0], seenIn, ...score(it, seenIn) };
+    return { it, cve: it.cve?.toUpperCase() ?? ids[0], seenIn: [...seen] };
+  });
+
+  // 增强信号：EPSS（全部漏洞类 CVE）+ 公开 PoC（初步打分最高的若干个）
+  const vulnCves = [...new Set(base.filter((b) => b.it.source !== "news" && b.cve).map((b) => b.cve!))];
+  const enrich: EnrichStatus = {
+    epss: { ok: false, count: 0, ms: 0 },
+    poc: { ok: false, checked: 0, found: 0, ms: 0 },
+  };
+
+  let epssMap = new Map<string, EpssScore>();
+  let started = Date.now();
+  try {
+    epssMap = await fetchEpss(vulnCves);
+    enrich.epss = { ok: true, count: epssMap.size, ms: Date.now() - started };
+  } catch (error) {
+    enrich.epss = { ok: false, count: 0, ms: Date.now() - started, error: String(error).slice(0, 160) };
+  }
+
+  const prelim = base
+    .filter((b) => b.it.source !== "news" && b.cve)
+    .map((b) => ({ cve: b.cve!, p: score(b.it, b.seenIn, { epss: epssMap.get(b.cve!) }).priority }))
+    .sort((a, b) => b.p - a.p);
+  const pocTargets = [...new Set(prelim.map((x) => x.cve))].slice(0, POC_CHECK_LIMIT);
+
+  let pocMap = new Map<string, PocInfo>();
+  started = Date.now();
+  try {
+    const { map, failed } = await fetchPocMany(pocTargets);
+    pocMap = map;
+    const found = [...map.values()].filter((v) => v.count > 0).length;
+    enrich.poc = {
+      ok: failed < pocTargets.length || pocTargets.length === 0,
+      checked: pocTargets.length,
+      found,
+      ms: Date.now() - started,
+      error: failed ? `${failed} 个查询失败` : undefined,
+    };
+  } catch (error) {
+    enrich.poc = { ok: false, checked: 0, found: 0, ms: Date.now() - started, error: String(error).slice(0, 160) };
+  }
+
+  const items: ScoredItem[] = base.map(({ it, cve, seenIn }) => {
+    const sig: Signals = cve ? { epss: epssMap.get(cve), poc: pocMap.get(cve) } : {};
+    return {
+      ...it,
+      cve,
+      seenIn,
+      epss: sig.epss?.epss,
+      epssPct: sig.epss?.pct,
+      poc: sig.poc && sig.poc.count > 0 ? sig.poc : undefined,
+      kevDueDays: it.source === "kev" ? daysUntil(it.dueDate) : undefined,
+      ...score(it, seenIn, sig),
+    };
   });
 
   const totals: Partial<Record<SourceKind, number>> = {};
@@ -173,8 +310,11 @@ async function buildIntel(): Promise<IntelSnapshot> {
       ok: r.ok,
       count: r.items.length,
       total: r.total,
-      error: r.error ? r.error.slice(0, 160) : undefined,
+      ms: r.ms,
+      feeds: r.feeds,
+      error: r.error ? r.error.slice(0, 200) : undefined,
     })),
+    enrich,
     items,
     top,
     briefing: buildBriefing(items, totals),
@@ -182,7 +322,7 @@ async function buildIntel(): Promise<IntelSnapshot> {
 }
 
 /**
- * 首页、JSON API、RSS 共用同一份快照（Vercel Data Cache，30 分钟），
- * 避免无 API Key 时对 NVD 的重复请求触发限流。
+ * 首页、JSON API、RSS 共用同一份快照（Data Cache，30 分钟），
+ * 避免无 API Key 时对 NVD / EPSS / PoC 镜像的重复请求。
  */
-export const getIntel = unstable_cache(buildIntel, ["intel-snapshot-v4"], { revalidate: 1800 });
+export const getIntel = unstable_cache(buildIntel, ["intel-snapshot-v5"], { revalidate: 1800 });

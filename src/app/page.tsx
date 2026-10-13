@@ -10,15 +10,22 @@ const SOURCE_META: Record<SourceKind, { label: string; desc: string }> = {
   cve: { label: "高危 CVE", desc: "NVD · CVSS ≥ 7" },
   ghsa: { label: "开源组件漏洞", desc: "GitHub Advisory" },
   kev: { label: "在野利用", desc: "CISA KEV" },
-  news: { label: "安全资讯", desc: "RSS × 4" },
+  cn: { label: "中文漏洞库", desc: "长亭漏洞库" },
+  news: { label: "安全资讯", desc: "中英文 RSS" },
 };
 
 function fmt(iso: string) {
   return new Date(iso).toLocaleString("zh-CN", { timeZone: "Asia/Shanghai", hour12: false });
 }
 
+function ms(v?: number) {
+  if (v === undefined) return "";
+  return v >= 1000 ? `${(v / 1000).toFixed(1)}s` : `${v}ms`;
+}
+
 export default async function Home() {
   const intel = await getIntel();
+  const { enrich } = intel;
 
   return (
     <div>
@@ -27,8 +34,8 @@ export default async function Home() {
           <span className="dot" /> 实时采集 · 更新于 {fmt(intel.fetchedAt)}（北京时间）
         </div>
         <p className="hero-sub">
-          聚合 NVD、GitHub Advisory、CISA KEV 与主流安全媒体，按「在野利用 → 严重度 → 多源印证 →
-          关注厂商」规则打分排序，给出当日需要优先处置的漏洞。
+          聚合 NVD、GitHub Advisory、CISA KEV、长亭漏洞库与中英文安全媒体，结合 EPSS 被利用概率与公开 PoC，按「在野利用 →
+          严重度 → 被利用概率 → 公开 PoC → 多源印证 → 关注厂商」规则打分，给出当日需要优先处置的漏洞。点击任一条目查看详情。
         </p>
       </section>
 
@@ -62,37 +69,57 @@ export default async function Home() {
           </section>
         )}
 
-        {intel.top.length > 0 && (
-          <section className="panel">
-            <h2 className="panel-title">🚨 优先处置 Top {intel.top.length}</h2>
-            <ol className="top-list">
-              {intel.top.map((t) => (
-                <li key={`${t.source}-${t.id}`}>
-                  <div className="top-head">
-                    <span className="prio" title="规则引擎优先级">
-                      {t.priority}
-                    </span>
-                    <a href={t.url} target="_blank" rel="noreferrer" className="top-title">
-                      {t.title === t.id && t.summary
-                        ? `${t.id} — ${t.summary.slice(0, 90)}${t.summary.length > 90 ? "…" : ""}`
-                        : t.title}
-                    </a>
-                  </div>
-                  <div className="reasons">
-                    {t.reasons.map((r) => (
-                      <span key={r} className="reason">
-                        {r}
-                      </span>
-                    ))}
-                  </div>
-                </li>
+        <section className="panel">
+          <h2 className="panel-title">🩺 数据源健康</h2>
+          <table className="health">
+            <tbody>
+              {intel.sources.map((s) => (
+                <tr key={s.source}>
+                  <td>
+                    <span className={`hdot ${s.ok ? "ok" : "bad"}`} />
+                    {SOURCE_META[s.source].desc}
+                  </td>
+                  <td className="num">{s.ok ? `${s.count} 条` : "失败"}</td>
+                  <td className="num">{ms(s.ms)}</td>
+                </tr>
               ))}
-            </ol>
-          </section>
-        )}
+              {intel.sources
+                .flatMap((s) => s.feeds ?? [])
+                .map((f) => (
+                  <tr key={f.name} className="sub">
+                    <td title={f.error}>
+                      <span className={`hdot ${f.ok ? "ok" : "bad"}`} />
+                      RSS · {f.name}
+                    </td>
+                    <td className="num">{f.ok ? `${f.count} 条` : "不可达"}</td>
+                    <td className="num">{ms(f.ms)}</td>
+                  </tr>
+                ))}
+              <tr>
+                <td title={enrich.epss.error}>
+                  <span className={`hdot ${enrich.epss.ok ? "ok" : "bad"}`} />
+                  增强 · FIRST EPSS
+                </td>
+                <td className="num">{enrich.epss.ok ? `${enrich.epss.count} 个 CVE` : "失败"}</td>
+                <td className="num">{ms(enrich.epss.ms)}</td>
+              </tr>
+              <tr>
+                <td title={enrich.poc.error}>
+                  <span className={`hdot ${enrich.poc.ok ? "ok" : "bad"}`} />
+                  增强 · 公开 PoC
+                </td>
+                <td className="num">
+                  {enrich.poc.ok ? `${enrich.poc.found}/${enrich.poc.checked} 有 PoC` : "失败"}
+                </td>
+                <td className="num">{ms(enrich.poc.ms)}</td>
+              </tr>
+            </tbody>
+          </table>
+          <div className="panel-note">单个源失败不影响整体，页面会自动降级；鼠标悬停可看错误原因</div>
+        </section>
       </div>
 
-      <IntelBoard items={intel.items} />
+      <IntelBoard items={intel.items} top={intel.top} />
     </div>
   );
 }

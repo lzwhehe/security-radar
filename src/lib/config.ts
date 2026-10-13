@@ -5,6 +5,7 @@ import YAML from "yaml";
 export interface NewsFeed {
   name: string;
   url: string;
+  lang?: "zh" | "en";
 }
 
 export interface AppConfig {
@@ -19,6 +20,7 @@ export interface AppConfig {
     news_max: number;
     ghsa_max: number;
     kev_max: number;
+    cn_max: number;
   };
 }
 
@@ -41,12 +43,15 @@ const DEFAULT_CONFIG: AppConfig = {
     "ios",
   ],
   news_feeds: [
-    { name: "The Hacker News", url: "https://feeds.feedburner.com/TheHackersNews" },
-    { name: "BleepingComputer", url: "https://www.bleepingcomputer.com/feed/" },
-    { name: "Krebs on Security", url: "https://krebsonsecurity.com/feed/" },
-    { name: "Schneier on Security", url: "https://www.schneier.com/feed/atom/" },
+    { name: "安全客", url: "https://api.anquanke.com/data/v1/rss", lang: "zh" },
+    { name: "先知社区", url: "https://xz.aliyun.com/feed", lang: "zh" },
+    { name: "Seebug Paper", url: "https://paper.seebug.org/rss/", lang: "zh" },
+    { name: "Krebs on Security", url: "https://krebsonsecurity.com/feed/", lang: "en" },
+    { name: "Schneier on Security", url: "https://www.schneier.com/feed/atom/", lang: "en" },
+    { name: "The Hacker News", url: "https://feeds.feedburner.com/TheHackersNews", lang: "en" },
+    { name: "BleepingComputer", url: "https://www.bleepingcomputer.com/feed/", lang: "en" },
   ],
-  limits: { news_max: 25, ghsa_max: 25, kev_max: 20 },
+  limits: { news_max: 30, ghsa_max: 25, kev_max: 20, cn_max: 15 },
 };
 
 let cached: AppConfig | null = null;

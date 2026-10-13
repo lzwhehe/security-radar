@@ -28,17 +28,34 @@ focus_keywords:
 
 # 安全资讯 RSS 源
 news_feeds:
-  - name: The Hacker News
-    url: https://feeds.feedburner.com/TheHackersNews
-  - name: BleepingComputer
-    url: https://www.bleepingcomputer.com/feed/
+  # 中文源（国内服务器可直接访问）
+  - name: 安全客
+    url: https://api.anquanke.com/data/v1/rss
+    lang: zh
+  - name: 先知社区
+    url: https://xz.aliyun.com/feed
+    lang: zh
+  - name: Seebug Paper
+    url: https://paper.seebug.org/rss/
+    lang: zh
+  # 英文源（The Hacker News、BleepingComputer 在国内访问不了，可用环境变量 NEWS_SKIP 跳过）
   - name: Krebs on Security
     url: https://krebsonsecurity.com/feed/
+    lang: en
   - name: Schneier on Security
     url: https://www.schneier.com/feed/atom/
+    lang: en
+  - name: The Hacker News
+    url: https://feeds.feedburner.com/TheHackersNews
+    lang: en
+  - name: BleepingComputer
+    url: https://www.bleepingcomputer.com/feed/
+    lang: en
 
 # 每个源最多保留条数
 limits:
-  news_max: 25
+  news_max: 30
   ghsa_max: 25
   kev_max: 20
+  # 长亭漏洞库（中文）条数
+  cn_max: 15

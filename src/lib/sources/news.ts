@@ -1,5 +1,5 @@
 import { XMLParser } from "fast-xml-parser";
-import type { RawItem, SourceResult } from "../types";
+import type { FeedStatus, RawItem, SourceResult } from "../types";
 import { loadConfig } from "../config";
 
 const parser = new XMLParser({ ignoreAttributes: false, attributeNamePrefix: "@_" });
@@ -46,10 +46,10 @@ function linkOf(item: FeedItem): string {
   return "";
 }
 
-async function fetchFeed(name: string, url: string, max: number): Promise<RawItem[]> {
+async function fetchFeed(name: string, url: string, max: number, lang?: "zh" | "en"): Promise<RawItem[]> {
   const res = await fetch(url, {
     headers: { "User-Agent": "security-radar/1.0", Accept: "application/rss+xml, application/xml" },
-    signal: AbortSignal.timeout(20000),
+    signal: AbortSignal.timeout(12000),
   });
   if (!res.ok) throw new Error(`${name} HTTP ${res.status}`);
   const xml = await res.text();
@@ -71,28 +71,50 @@ async function fetchFeed(name: string, url: string, max: number): Promise<RawIte
       url: linkOf(it),
       summary: body.slice(0, 400),
       publishedAt: it.pubDate || it.published || it.updated,
+      lang,
     } satisfies RawItem;
   });
 }
 
 export async function fetchNews(): Promise<SourceResult> {
   const cfg = loadConfig();
-  const perFeed = Math.max(4, Math.ceil(cfg.limits.news_max / cfg.news_feeds.length));
-  const results = await Promise.allSettled(
-    cfg.news_feeds.map((f) => fetchFeed(f.name, f.url, perFeed)),
+  // NEWS_SKIP=源名称1,源名称2：跳过当前网络访问不了的源（如国内服务器跳过 The Hacker News）
+  const skip = new Set(
+    (process.env.NEWS_SKIP ?? "")
+      .split(",")
+      .map((s) => s.trim())
+      .filter(Boolean),
+  );
+  const feeds = cfg.news_feeds.filter((f) => !skip.has(f.name));
+  const perFeed = Math.max(4, Math.ceil(cfg.limits.news_max / Math.max(1, feeds.length)));
+
+  const settled = await Promise.all(
+    feeds.map(async (f) => {
+      const started = Date.now();
+      try {
+        const items = await fetchFeed(f.name, f.url, perFeed, f.lang);
+        return { items, status: { name: f.name, ok: true, count: items.length, ms: Date.now() - started } };
+      } catch (error) {
+        const status: FeedStatus = {
+          name: f.name,
+          ok: false,
+          count: 0,
+          ms: Date.now() - started,
+          error: String(error).slice(0, 120),
+        };
+        return { items: [] as RawItem[], status };
+      }
+    }),
   );
 
-  const items: RawItem[] = [];
-  const errors: string[] = [];
-  for (const r of results) {
-    if (r.status === "fulfilled") items.push(...r.value);
-    else errors.push(String(r.reason));
-  }
+  const items = settled.flatMap((r) => r.items);
+  const statuses = settled.map((r) => r.status);
+  const errors = statuses.filter((s) => !s.ok).map((s) => `${s.name}: ${s.error}`);
 
   items.sort((a, b) => {
     const ta = a.publishedAt ? Date.parse(a.publishedAt) : 0;
     const tb = b.publishedAt ? Date.parse(b.publishedAt) : 0;
-    return tb - ta;
+    return (Number.isNaN(tb) ? 0 : tb) - (Number.isNaN(ta) ? 0 : ta);
   });
 
   return {
@@ -100,5 +122,6 @@ export async function fetchNews(): Promise<SourceResult> {
     ok: items.length > 0,
     items: items.slice(0, cfg.limits.news_max),
     error: errors.length ? errors.join("; ") : undefined,
+    feeds: statuses,
   };
 }
