@@ -73,8 +73,8 @@ function formatVersions(v: NonNullable<CveContainer["affected"]>[number]["versio
   });
 }
 
-export async function GET(_request: Request, { params }: { params: { id: string } }) {
-  const id = decodeURIComponent(params.id).toUpperCase();
+export async function GET(_request: Request, { params }: { params: Promise<{ id: string }> }) {
+  const id = decodeURIComponent((await params).id).toUpperCase();
   if (!CVE_ID.test(id)) return Response.json({ error: "无效的 CVE 编号" }, { status: 400 });
 
   const [record, epss, poc] = await Promise.allSettled([
